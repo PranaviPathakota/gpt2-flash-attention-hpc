@@ -1,0 +1,39 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+
+# CUDA compiled binaries
+train_gpt2cu
+train_gpt2fp32cu
+test_gpt2cu
+profile_gpt2cu
+
+# Model checkpoints and data files
+*.bin
+*.pt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs (keep only the curated ones in results/logs/)
+*.log
+!results/logs/*.log
+
+# Environment
+.env
