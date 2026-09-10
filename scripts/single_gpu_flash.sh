@@ -1,27 +1,53 @@
 #!/bin/bash
-#SBATCH -A m4012                 # replace with your NERSC account
-#SBATCH -C gpu                  # use "cpu" for CPU nodes, "gpu" for GPU nodes
-#SBATCH -q regular              # queue: regular or debug
-#SBATCH -t 00:01:00              # time limit (hh:mm:ss)
-#SBATCH -J llm.cGpt2-2_Train_Flash_Attention          # job name
-#SBATCH -N 1                    # number of nodes
-#SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-task=32        # OpenMP threads per MPI rank
-#SBATCH -o llm.cGpt2-2_Train-cudNN.o%j               # stdout file
-#SBATCH -e llm.cGpt2-2_Train-cudNN.e%j               # stderr file
+#SBATCH -A m4012                        # NERSC account
+#SBATCH -C gpu                          # 40GB A100 GPU nodes
+#SBATCH -q regular                      # queue
+#SBATCH -t 01:00:00                     # time limit
+#SBATCH -J llm.c_SingleGPU_Flash        # job name
+#SBATCH -N 1                            # 1 node
+#SBATCH --gpus-per-node=1              # 1 GPU
+#SBATCH --ntasks-per-node=1            # no MPI
+#SBATCH --cpus-per-task=32             # OpenMP threads
+#SBATCH -o llm.c_SingleGPU_Flash.o%j
+#SBATCH -e llm.c_SingleGPU_Flash.e%j
 
-# Load required modules
+# =============================================================================
+# Training configuration — adjust these for your experiment
+# =============================================================================
+MODEL="d12"           # d12=124M, d24=350M, d36=774M
+BATCH_SIZE=32         # sequences per GPU
+SEQ_LEN=1024          # context length: 1024, 2048, 4096, 8192
+TOTAL_BATCH=524288    # total tokens per step (via gradient accumulation)
+MAX_STEPS=20000
+LEARNING_RATE=0.0006
+GRAD_CLIP=0.1
+LR_WARMUP_STEPS=0
+VAL_STEPS=500
+LOG_STEPS=1000
+OUTPUT_DIR="SingleGPU_1x_log${MODEL}_${SEQ_LEN}l_FlashAttention"
+TRAIN_DATA="dev/data/fineweb10B/fineweb_train_*.bin"
+VAL_DATA="dev/data/fineweb10B/fineweb_val_*.bin"
+# =============================================================================
+
+# Navigate to src/ (where Makefile.perlmutter and source files live)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT/src"
+
+# Load modules (no MPI, no NCCL for single GPU)
 module load gcc/12.2.0
 module load python/3.9
-module load cuda/12.4
+module load cudatoolkit/12.4
 module load PrgEnv-gnu
-module load openmpi/5.0.3
 
 echo "=============================================="
-echo "🚀 cuDNN Flash Attention Training Script"
+echo "Single GPU Training — Flash Attention (cuDNN)"
 echo "=============================================="
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURMD_NODENAME" 
+echo "Job ID:     $SLURM_JOB_ID"
+echo "Node:       $SLURMD_NODENAME"
+echo "Model:      $MODEL"
+echo "Batch size: $BATCH_SIZE"
+echo "Seq length: $SEQ_LEN"
+echo "Output dir: $OUTPUT_DIR"
 echo "Start time: $(date)"
 echo "=============================================="
 
@@ -30,249 +56,134 @@ nvidia-smi
 # Activate conda environment
 conda activate env-llm.c
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to activate conda environment"
+    echo "ERROR: Failed to activate conda environment env-llm.c"
     exit 1
 fi
 
-echo "✅ Environment: $CONDA_PREFIX"
-
-# Set up cuDNN environment (the symlinks should already exist from recovery script)
-export CUDNN_LIB="$CONDA_PREFIX/lib"
-export CUDNN_INCLUDE="$CONDA_PREFIX/lib/python3.8/site-packages/nvidia/cudnn/include"
-
-# Verify cuDNN is available
-echo "Verifying cuDNN setup..."
-echo "cuDNN libraries: $(ls $CUDNN_LIB/libcudnn* 2>/dev/null | wc -l) files"
-echo "cuDNN headers: $(ls $CUDNN_INCLUDE/cudnn*.h 2>/dev/null | wc -l) files"
-
-if [ ! -f "$CUDNN_LIB/libcudnn.so" ] || [ ! -f "$CUDNN_INCLUDE/cudnn.h" ]; then
-    echo "❌ cuDNN not properly configured"
-    echo "Run the recovery script first: bash advanced_cudnn_recovery.sh"
-    exit 1
-fi
-
-# Set up cuDNN frontend
-if [ ! -d "cudnn-frontend" ]; then
-    echo "Cloning cuDNN frontend..."
-    git clone https://github.com/NVIDIA/cudnn-frontend.git
-fi
-
-if [ ! -d "cudnn-frontend/include" ]; then
-    echo "❌ cuDNN frontend not available"
-    exit 1
-fi
-
-export CUDNN_FRONTEND_PATH="$(pwd)/cudnn-frontend/include"
-
-# Set environment variables
 export OMP_NUM_THREADS=32
 export CUDA_VISIBLE_DEVICES=0
+export PYTHONUNBUFFERED=1
+
+# CUDA paths (Perlmutter HPC SDK)
 export CUDA_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/24.5/cuda/12.4
 export CUDA_MATH_LIBS=/opt/nvidia/hpc_sdk/Linux_x86_64/24.5/math_libs/12.4/targets/x86_64-linux
-
-# Enhanced library paths with cuDNN
-export LD_LIBRARY_PATH="$CUDNN_LIB:$CUDA_MATH_LIBS/lib:$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
-export LIBRARY_PATH="$CUDNN_LIB:$CUDA_MATH_LIBS/lib:$CUDA_HOME/lib64:$LIBRARY_PATH"
-export CPATH="$CUDNN_INCLUDE:$CUDNN_FRONTEND_PATH:$CUDA_HOME/include:$CUDA_MATH_LIBS/include:$CPATH"
+export LD_LIBRARY_PATH="$CUDA_MATH_LIBS/lib:$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+export LIBRARY_PATH="$CUDA_MATH_LIBS/lib:$CUDA_HOME/lib64:$LIBRARY_PATH"
+export CPATH="$CUDA_HOME/include:$CUDA_MATH_LIBS/include:$CPATH"
 export PATH="$CUDA_HOME/bin:$PATH"
 
-# HuggingFace cache
 export HF_DATASETS_CACHE=$SCRATCH/hf_cache
 export HF_HOME=$SCRATCH/hf_cache
 export TRANSFORMERS_CACHE=$SCRATCH/hf_cache
 
-echo "=============================================="
-echo "Final Environment Check:"
-echo "CUDNN_LIB: $CUDNN_LIB"
-echo "CUDNN_INCLUDE: $CUDNN_INCLUDE"
+# cuDNN setup — libraries installed via conda (nvidia-cudnn package)
+export CUDNN_LIB="$CONDA_PREFIX/lib"
+export CUDNN_INCLUDE="$CONDA_PREFIX/lib/python3.8/site-packages/nvidia/cudnn/include"
+export LD_LIBRARY_PATH="$CUDNN_LIB:$LD_LIBRARY_PATH"
+export LIBRARY_PATH="$CUDNN_LIB:$LIBRARY_PATH"
+export CPATH="$CUDNN_INCLUDE:$CPATH"
+
+# cuDNN frontend (header-only, cloned once)
+if [ ! -d "cudnn-frontend" ]; then
+    echo "Cloning cuDNN frontend..."
+    git clone https://github.com/NVIDIA/cudnn-frontend.git
+fi
+if [ ! -d "cudnn-frontend/include" ]; then
+    echo "ERROR: cuDNN frontend not available at cudnn-frontend/include"
+    exit 1
+fi
+export CUDNN_FRONTEND_PATH="$(pwd)/cudnn-frontend/include"
+
+echo "CUDA_HOME:           $CUDA_HOME"
+echo "CUDNN_LIB:           $CUDNN_LIB"
+echo "CUDNN_INCLUDE:       $CUDNN_INCLUDE"
 echo "CUDNN_FRONTEND_PATH: $CUDNN_FRONTEND_PATH"
-echo "NVCC: $(which nvcc)"
 
-# Quick cuDNN link test
-echo ""
+# Verify cuDNN is properly installed
+if [ ! -f "$CUDNN_LIB/libcudnn.so" ]; then
+    echo "ERROR: libcudnn.so not found at $CUDNN_LIB"
+    echo "Install with: conda install -c nvidia cudnn"
+    exit 1
+fi
+if [ ! -f "$CUDNN_INCLUDE/cudnn.h" ]; then
+    echo "ERROR: cudnn.h not found at $CUDNN_INCLUDE"
+    exit 1
+fi
+
+# Quick link test
 echo "Testing cuDNN linking..."
-echo "int main(){return 0;}" > quick_test.c
-gcc quick_test.c -L"$CUDNN_LIB" -lcudnn -o quick_test 2>&1
+echo "int main(){return 0;}" > /tmp/quick_test.c
+gcc /tmp/quick_test.c -L"$CUDNN_LIB" -lcudnn -o /tmp/quick_test 2>&1
 if [ $? -eq 0 ]; then
-    echo "✅ cuDNN linking confirmed"
-    rm -f quick_test.c quick_test
+    echo "cuDNN linking confirmed"
+    rm -f /tmp/quick_test.c /tmp/quick_test
 else
-    echo "❌ cuDNN linking failed"
+    echo "ERROR: cuDNN linking failed"
     exit 1
 fi
 
+# Verify training data
+ls $TRAIN_DATA 1>/dev/null 2>&1 || { echo "ERROR: Training data not found: $TRAIN_DATA"; exit 1; }
+ls $VAL_DATA   1>/dev/null 2>&1 || { echo "ERROR: Validation data not found: $VAL_DATA"; exit 1; }
+echo "Training data verified"
+
+# Build — single GPU + cuDNN Flash Attention; disable NCCL and MPI
 echo "=============================================="
+echo "Building train_gpt2cu (Flash Attention, single GPU)..."
+make -f Makefile.perlmutter clean
 
-# Check training data
-if ! ls dev/data/fineweb10B/fineweb_train_*.bin 1> /dev/null 2>&1; then
-    echo "❌ Training data not found"
-    exit 1
-fi
-
-if ! ls dev/data/fineweb10B/fineweb_val_*.bin 1> /dev/null 2>&1; then
-    echo "❌ Validation data not found"
-    exit 1
-fi
-
-echo "✅ Training data verified"
-
-# Create build directory
-mkdir -p build
-
-# Replace Makefile to use our cuDNN configuration
-echo "Creating cuDNN Makefile..."
-cat > Makefile << 'EOF'
-CC ?= clang
-CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
-NVCC_FLAGS = --threads=0 -t=0 --use_fast_math -std=c++17 -O3
-NVCC_LDFLAGS = -lcublas -lcublasLt -lnvidia-ml
-BUILD_DIR = build
-USE_CUDNN = 1
-
-$(shell mkdir -p $(BUILD_DIR))
-
-NVCC := $(shell which nvcc 2>/dev/null)
-
-# GPU compute capability
-GPU_COMPUTE_CAPABILITY = $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed 's/\.//g' | sort -n | head -n 1)
-ifneq ($(GPU_COMPUTE_CAPABILITY),)
-  NVCC_FLAGS += --generate-code arch=compute_$(GPU_COMPUTE_CAPABILITY),code=[compute_$(GPU_COMPUTE_CAPABILITY),sm_$(GPU_COMPUTE_CAPABILITY)]
-endif
-
-# cuDNN configuration using environment variables
-ifeq ($(USE_CUDNN), 1)
-  $(info ✓ Building with cuDNN Flash Attention support)
-  NVCC_INCLUDES = -I$(CUDNN_INCLUDE) -I$(CUDNN_FRONTEND_PATH)
-  NVCC_LDFLAGS += -L$(CUDNN_LIB) -lcudnn
-  NVCC_FLAGS += -DENABLE_CUDNN
-  NVCC_CUDNN = $(BUILD_DIR)/cudnn_att.o
-  TARGETS = train_gpt2cu $(NVCC_CUDNN)
-else
-  $(info → Building without cuDNN)
-  TARGETS = train_gpt2cu
-endif
-
-# Precision
-PRECISION ?= BF16
-ifeq ($(PRECISION), FP32)
-  PFLAGS = -DENABLE_FP32
-else ifeq ($(PRECISION), FP16)
-  PFLAGS = -DENABLE_FP16
-else
-  PFLAGS = -DENABLE_BF16
-endif
-
-.PHONY: all clean
-
-all: $(TARGETS)
-
-$(NVCC_CUDNN): llmc/cudnn_att.cpp
-	@echo "🔧 Compiling cuDNN attention module..."
-	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_INCLUDES) -o $@
-
-train_gpt2cu: train_gpt2.cu $(NVCC_CUDNN)
-	@echo "🚀 Building train_gpt2cu with cuDNN Flash Attention..."
-	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) -o $@
-
-clean:
-	rm -f train_gpt2cu test_gpt2cu $(BUILD_DIR)/*.o
-EOF
-
-echo "✅ cuDNN Makefile created"
-
-# Clean and build with cuDNN
-echo "=============================================="
-echo "Building with cuDNN Flash Attention..."
-
-make clean
-
-# Export environment variables for make
-export CUDNN_INCLUDE
-export CUDNN_LIB  
-export CUDNN_FRONTEND_PATH
-
-# Build step by step for better debugging
-echo "Step 1: Building cuDNN attention module..."
-make build/cudnn_att.o
-
-if [ $? -eq 0 ]; then
-    echo "✅ cuDNN attention module compiled successfully"
-else
-    echo "❌ cuDNN attention module compilation failed"
+echo "Step 1: Compiling cuDNN attention module..."
+make -f Makefile.perlmutter build/cudnn_att.o NO_MULTI_GPU=1 NO_USE_MPI=1 USE_CUDNN=1
+if [ $? -ne 0 ]; then
+    echo "ERROR: cuDNN attention module compilation failed"
     exit 1
 fi
 
 echo "Step 2: Building main training executable..."
-make train_gpt2cu
-
-if [ $? -eq 0 ]; then
-    echo "🎉 SUCCESS: train_gpt2cu built with cuDNN Flash Attention!"
-else
-    echo "❌ Main executable build failed"
+make -f Makefile.perlmutter train_gpt2cu NO_MULTI_GPU=1 NO_USE_MPI=1 USE_CUDNN=1
+if [ $? -ne 0 ]; then
+    echo "ERROR: Build failed"
     exit 1
 fi
 
-# Verify the executable and cuDNN linking
-if [ -x "./train_gpt2cu" ]; then
-    echo "✅ Executable created: $(ls -lh ./train_gpt2cu)"
-    
-    # Check cuDNN linking
-    echo "Checking cuDNN integration..."
-    if ldd ./train_gpt2cu | grep -q cudnn; then
-        echo "🚀 cuDNN Flash Attention is ENABLED!"
-        ldd ./train_gpt2cu | grep cudnn
-    else
-        echo "❌ cuDNN not properly linked"
-        exit 1
-    fi
+# Verify cuDNN is linked
+if ldd ./train_gpt2cu | grep -q cudnn; then
+    echo "cuDNN Flash Attention is ENABLED"
+    ldd ./train_gpt2cu | grep cudnn
 else
-    echo "❌ Executable not found"
+    echo "ERROR: cuDNN not linked in binary"
     exit 1
 fi
+echo "Build successful: $(ls -lh train_gpt2cu)"
 
-# Run the training with cuDNN Flash Attention
+# Run training (no srun — single process, no MPI)
 echo "=============================================="
-echo "🚀 Starting Training with cuDNN Flash Attention"
+echo "Starting training: $MODEL | seq=$SEQ_LEN | batch=$BATCH_SIZE"
 echo "Start time: $(date)"
 echo "=============================================="
 
 ./train_gpt2cu \
-    -i "dev/data/fineweb10B/fineweb_train_*.bin" \
-    -j "dev/data/fineweb10B/fineweb_val_*.bin" \
-    -o SingleGPU_1x_log124M_1024l_FlashAttention \
-    -e "d12" \
-    -b 32 \
-    -t 1024 \
-    -d 524288 \
+    -i "$TRAIN_DATA" \
+    -j "$VAL_DATA" \
+    -o "$OUTPUT_DIR" \
+    -e "$MODEL" \
+    -b $BATCH_SIZE \
+    -t $SEQ_LEN \
+    -d $TOTAL_BATCH \
     -r 1 \
     -z 1 \
-    -c 0.1 \
-    -l 0.0006 \
+    -c $GRAD_CLIP \
+    -l $LEARNING_RATE \
     -q 0.1 \
-    -u 0 \
-    -x 20000 \
-    -n 1000 \
-    -v 500 \
+    -u $LR_WARMUP_STEPS \
+    -x $MAX_STEPS \
+    -n $LOG_STEPS \
+    -v $VAL_STEPS \
     -s 0 \
     -h 1
 
 TRAIN_EXIT_CODE=$?
-
-echo "=============================================="
-echo "Training completed at $(date)"
-echo "Exit code: $TRAIN_EXIT_CODE"
-
-if [ $TRAIN_EXIT_CODE -eq 0 ]; then
-    echo "🎉 SUCCESS: Training with cuDNN Flash Attention completed!"
-    echo "Output directory:"
-    ls -la SingleGPU_1x_log124M_1024l_FlashAttention/ 2>/dev/null || echo "Check SingleGPU_1x_log124M_1024l_FlashAttention directory"
-    echo ""
-    echo "🚀 Flash Attention was used for optimal performance!"
-else
-    echo "❌ Training failed with exit code $TRAIN_EXIT_CODE"
-    exit $TRAIN_EXIT_CODE
-fi
-
-echo "=============================================="
-echo "✨ cuDNN Flash Attention Training Complete! ✨"
-echo "=============================================="
+echo "Training completed at $(date) — exit code: $TRAIN_EXIT_CODE"
+[ $TRAIN_EXIT_CODE -ne 0 ] && exit $TRAIN_EXIT_CODE
+echo "SUCCESS: single GPU Flash Attention training complete"
+ls -la "$OUTPUT_DIR"/ 2>/dev/null || true

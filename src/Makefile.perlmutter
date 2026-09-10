@@ -1,0 +1,232 @@
+# Makefile.perlmutter
+# Perlmutter-specific build configuration for NERSC (NVIDIA A100, Cray MPICH, module-based NCCL)
+#
+# Usage:
+#   Single GPU (standard):   make -f Makefile.perlmutter train_gpt2cu NO_MULTI_GPU=1 NO_USE_MPI=1
+#   Single GPU (flash):      make -f Makefile.perlmutter train_gpt2cu NO_MULTI_GPU=1 NO_USE_MPI=1 USE_CUDNN=1
+#   Multi-GPU / Multi-node:  make -f Makefile.perlmutter train_gpt2cu
+#   Multi-GPU / Multi-node (flash): make -f Makefile.perlmutter train_gpt2cu USE_CUDNN=1
+#
+# Required environment variables for multi-GPU builds (set by the SLURM scripts):
+#   NCCL_HOME         — set by: module load nccl/2.24.3
+#   MPICH_DIR         — set by: export MPICH_DIR=${CRAY_MPICH_PREFIX:-/opt/cray/pe/mpich/8.1.30/ofi/gnu/12.3}
+#   GTL_LIBRARY_PATH  — set by: export GTL_LIBRARY_PATH=/opt/cray/pe/mpich/8.1.30/gtl/lib
+#
+# Required environment variables for cuDNN builds (set by the SLURM scripts):
+#   CUDNN_LIB             — path to libcudnn.so (e.g. $CONDA_PREFIX/lib)
+#   CUDNN_INCLUDE         — path to cudnn.h (e.g. $CONDA_PREFIX/lib/python3.8/site-packages/nvidia/cudnn/include)
+#   CUDNN_FRONTEND_PATH   — path to cuDNN frontend headers (e.g. $(pwd)/cudnn-frontend/include)
+
+CC ?= clang
+CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
+LDFLAGS =
+LDLIBS = -lm
+CFLAGS_COND = -march=native
+FORCE_NVCC_O ?= 3
+
+NVCC_FLAGS = --threads=0 -t=0 --use_fast_math -std=c++17 -O$(FORCE_NVCC_O)
+NVCC_LDFLAGS = -lcublas -lcublasLt -lnvidia-ml
+NVCC_INCLUDES =
+NVCC_LDLIBS =
+NVCC_CUDNN =
+
+BUILD_DIR = build
+$(shell mkdir -p $(BUILD_DIR))
+REMOVE_BUILD_OBJECT_FILES := rm -f $(BUILD_DIR)/*.o
+REMOVE_FILES = rm -f
+
+# ---------------------------------------------------------------------------
+# GPU compute capability (auto-detect from nvidia-smi)
+# ---------------------------------------------------------------------------
+ifndef GPU_COMPUTE_CAPABILITY
+  ifneq ($(shell which nvidia-smi 2>/dev/null),)
+    GPU_COMPUTE_CAPABILITY := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed 's/\.//g' | sort -n | head -n 1)
+    GPU_COMPUTE_CAPABILITY := $(strip $(GPU_COMPUTE_CAPABILITY))
+  endif
+endif
+ifneq ($(GPU_COMPUTE_CAPABILITY),)
+  NVCC_FLAGS += --generate-code arch=compute_$(GPU_COMPUTE_CAPABILITY),code=[compute_$(GPU_COMPUTE_CAPABILITY),sm_$(GPU_COMPUTE_CAPABILITY)]
+  $(info ✓ GPU compute capability: $(GPU_COMPUTE_CAPABILITY))
+endif
+
+NVCC := $(shell which nvcc 2>/dev/null)
+
+$(info -------------------------------------------------------------------)
+
+# ---------------------------------------------------------------------------
+# OpenMP
+# ---------------------------------------------------------------------------
+ifeq ($(NO_OMP), 1)
+  $(info → OpenMP manually disabled)
+else
+  ifeq ($(shell echo | $(CC) -fopenmp -x c -E - > /dev/null 2>&1; echo $$?), 0)
+    CFLAGS += -fopenmp -DOMP
+    LDLIBS += -lgomp
+    $(info ✓ OpenMP found)
+  else
+    $(info ✗ OpenMP not found)
+  endif
+endif
+
+# ---------------------------------------------------------------------------
+# NCCL (multi-GPU)
+# On Perlmutter: loaded via "module load nccl/2.24.3" which sets $NCCL_DIR.
+# The SLURM scripts export NCCL_HOME=$NCCL_DIR so we check NCCL_HOME first.
+# Falls back to system-wide search (dpkg/rpm/find) for non-module environments.
+# Disabled entirely when NO_MULTI_GPU=1 (single-GPU builds).
+# ---------------------------------------------------------------------------
+ifeq ($(NO_MULTI_GPU), 1)
+  $(info → Multi-GPU (NCCL) disabled — single-GPU build)
+else
+  ifdef NCCL_HOME
+    NCCL_SO := $(shell [ -f "$(NCCL_HOME)/lib/libnccl.so" ] && echo "exists")
+    ifeq ($(NCCL_SO), exists)
+      $(info ✓ NCCL found via NCCL_HOME (Perlmutter module): $(NCCL_HOME))
+      NVCC_INCLUDES += -I$(NCCL_HOME)/include
+      NVCC_LDFLAGS  += -L$(NCCL_HOME)/lib
+      NVCC_FLAGS    += -DMULTI_GPU
+      NVCC_LDLIBS   += -lnccl
+    else
+      $(warning ✗ NCCL_HOME set but libnccl.so not found — check module load)
+    endif
+  else
+    # Fallback: check system package managers and standard paths
+    NCCL_FOUND := $(shell \
+      (command -v rpm  >/dev/null 2>&1 && rpm  -qa  2>/dev/null | grep -q nccl && echo "exists") || \
+      (command -v dpkg >/dev/null 2>&1 && dpkg -l   2>/dev/null | grep -q nccl && echo "exists") || \
+      (find /usr -name "libnccl.so" -type f 2>/dev/null | grep -q . && echo "exists") \
+    )
+    ifeq ($(NCCL_FOUND), exists)
+      $(info ✓ NCCL found in system paths)
+      NVCC_FLAGS  += -DMULTI_GPU
+      NVCC_LDLIBS += -lnccl
+    else
+      $(warning ✗ NCCL not found — multi-GPU disabled. Run: module load nccl/2.24.3)
+    endif
+  endif
+endif
+
+# ---------------------------------------------------------------------------
+# MPI (multi-GPU coordination)
+# On Perlmutter: Cray MPICH is used. The SLURM scripts set $MPICH_DIR and
+# $GTL_LIBRARY_PATH (GPU Transport Layer, required for GPU-aware MPI).
+# Falls back to standard OpenMPI for non-Perlmutter environments.
+# Disabled entirely when NO_USE_MPI=1 (single-GPU builds).
+# ---------------------------------------------------------------------------
+OPENMPI_DIR ?= /usr/lib/x86_64-linux-gnu/openmpi
+
+ifeq ($(NO_USE_MPI), 1)
+  $(info → MPI disabled — single-GPU build)
+else
+  ifdef MPICH_DIR
+    MPI_H := $(shell [ -f "$(MPICH_DIR)/include/mpi.h" ] && echo "exists")
+    ifeq ($(MPI_H), exists)
+      $(info ✓ Cray MPICH found at $(MPICH_DIR))
+      NVCC_INCLUDES += -I$(MPICH_DIR)/include
+      NVCC_LDFLAGS  += -L$(MPICH_DIR)/lib
+      NVCC_LDLIBS   += -lmpi
+      NVCC_FLAGS    += -DUSE_MPI
+      # GTL: GPU Transport Layer — needed for GPU-aware MPI with Cray MPICH on Perlmutter
+      ifdef GTL_LIBRARY_PATH
+        $(info ✓ GTL library found at $(GTL_LIBRARY_PATH))
+        NVCC_LDFLAGS += -L$(GTL_LIBRARY_PATH)
+        NVCC_LDLIBS  += -lmpi_gtl_cuda
+      else
+        $(warning ✗ GTL_LIBRARY_PATH not set — GPU-aware MPI may not work on Perlmutter)
+      endif
+    else
+      $(warning ✗ MPICH_DIR set but mpi.h not found at $(MPICH_DIR)/include)
+    endif
+  else ifeq ($(shell [ -d $(OPENMPI_DIR)/lib ] && [ -d $(OPENMPI_DIR)/include ] && echo "exists"), exists)
+    $(info ✓ OpenMPI found at $(OPENMPI_DIR))
+    NVCC_INCLUDES += -I$(OPENMPI_DIR)/include
+    NVCC_LDFLAGS  += -L$(OPENMPI_DIR)/lib
+    NVCC_LDLIBS   += -lmpi
+    NVCC_FLAGS    += -DUSE_MPI
+  else
+    $(warning ✗ MPI not found — set MPICH_DIR for Cray MPICH, or install OpenMPI)
+  endif
+endif
+
+# ---------------------------------------------------------------------------
+# cuDNN Flash Attention (USE_CUDNN=1)
+# Requires CUDNN_LIB, CUDNN_INCLUDE, and CUDNN_FRONTEND_PATH to be set in
+# the environment before calling make. The SLURM scripts handle this.
+# ---------------------------------------------------------------------------
+USE_CUDNN ?= 0
+ifeq ($(USE_CUDNN), 1)
+  ifndef CUDNN_LIB
+    $(error USE_CUDNN=1 but CUDNN_LIB is not set. Export it before calling make.)
+  endif
+  ifndef CUDNN_INCLUDE
+    $(error USE_CUDNN=1 but CUDNN_INCLUDE is not set. Export it before calling make.)
+  endif
+  ifndef CUDNN_FRONTEND_PATH
+    $(error USE_CUDNN=1 but CUDNN_FRONTEND_PATH is not set. Export it before calling make.)
+  endif
+  $(info ✓ cuDNN Flash Attention enabled)
+  $(info   CUDNN_LIB=$(CUDNN_LIB))
+  $(info   CUDNN_INCLUDE=$(CUDNN_INCLUDE))
+  $(info   CUDNN_FRONTEND_PATH=$(CUDNN_FRONTEND_PATH))
+  NVCC_INCLUDES += -I$(CUDNN_INCLUDE) -I$(CUDNN_FRONTEND_PATH)
+  NVCC_LDFLAGS  += -L$(CUDNN_LIB) -lcudnn
+  NVCC_FLAGS    += -DENABLE_CUDNN
+  NVCC_CUDNN     = $(BUILD_DIR)/cudnn_att.o
+else
+  $(info → cuDNN disabled (standard attention). Use USE_CUDNN=1 for Flash Attention.)
+endif
+
+# ---------------------------------------------------------------------------
+# Precision (default: BF16, recommended for A100)
+# ---------------------------------------------------------------------------
+PRECISION ?= BF16
+VALID_PRECISIONS := FP32 FP16 BF16
+ifeq ($(filter $(PRECISION),$(VALID_PRECISIONS)),)
+  $(error Invalid PRECISION=$(PRECISION). Valid options: $(VALID_PRECISIONS))
+endif
+ifeq ($(PRECISION), FP32)
+  PFLAGS = -DENABLE_FP32
+else ifeq ($(PRECISION), FP16)
+  PFLAGS = -DENABLE_FP16
+else
+  PFLAGS = -DENABLE_BF16
+  $(info ✓ Precision: BF16)
+endif
+
+$(info -------------------------------------------------------------------)
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+.PHONY: all train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu clean
+
+TARGETS = train_gpt2 test_gpt2
+
+ifeq ($(NVCC),)
+  $(info ✗ nvcc not found — skipping GPU/CUDA builds)
+else
+  $(info ✓ nvcc found — including GPU/CUDA targets)
+  TARGETS += train_gpt2cu test_gpt2cu
+endif
+
+all: $(TARGETS)
+
+train_gpt2: train_gpt2.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+test_gpt2: test_gpt2.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+# cuDNN attention object (only built when USE_CUDNN=1)
+$(NVCC_CUDNN): llmc/cudnn_att.cpp
+	$(NVCC) -c $(NVCC_FLAGS) $(PFLAGS) $(NVCC_INCLUDES) $^ -o $@
+
+train_gpt2cu: train_gpt2.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) -o $@
+
+test_gpt2cu: test_gpt2.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) -o $@
+
+clean:
+	$(REMOVE_FILES) train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu
+	$(REMOVE_BUILD_OBJECT_FILES)

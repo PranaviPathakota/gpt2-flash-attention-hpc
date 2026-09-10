@@ -3,19 +3,19 @@
 #SBATCH -C "gpu&hbm40g"               # 40GB A100 GPU nodes
 #SBATCH -q regular                      # queue
 #SBATCH -t 01:00:00                     # time limit
-#SBATCH -J llm.c_MultiGPU_4x_Flash     # job name
-#SBATCH -N 1                            # 1 node (single-node multi-GPU)
-#SBATCH --gpus-per-node=4              # 4 GPUs
+#SBATCH -J llm.c_MultiNode_16x_Flash   # job name
+#SBATCH -N 4                            # 4 nodes
+#SBATCH --gpus-per-node=4              # 4 GPUs per node (16 total)
 #SBATCH --ntasks-per-node=4            # 1 MPI task per GPU
 #SBATCH --cpus-per-task=32             # OpenMP threads per MPI rank
-#SBATCH -o llm.c_MultiGPU_4x_Flash.o%j
-#SBATCH -e llm.c_MultiGPU_4x_Flash.e%j
+#SBATCH -o llm.c_MultiNode_16x_Flash.o%j
+#SBATCH -e llm.c_MultiNode_16x_Flash.e%j
 
 # =============================================================================
 # Training configuration — adjust these for your experiment
 # =============================================================================
 MODEL="d36"           # d12=124M, d24=350M, d36=774M
-BATCH_SIZE=8          # sequences per GPU (8 × 4 GPUs = 32 total)
+BATCH_SIZE=2          # sequences per GPU (2 × 16 GPUs = 32 total)
 SEQ_LEN=1024          # context length: 1024, 2048, 4096, 8192
 TOTAL_BATCH=524288    # total tokens per step (via gradient accumulation)
 MAX_STEPS=20000
@@ -24,7 +24,7 @@ GRAD_CLIP=0.1
 LR_WARMUP_STEPS=0
 VAL_STEPS=500
 LOG_STEPS=1000
-OUTPUT_DIR="MultiGPU_4x_log${MODEL}_${SEQ_LEN}l_FlashAttention"
+OUTPUT_DIR="MultiNode_16x_log${MODEL}_${SEQ_LEN}l_FlashAttention"
 TRAIN_DATA="dev/data/fineweb10B/fineweb_train_*.bin"
 VAL_DATA="dev/data/fineweb10B/fineweb_val_*.bin"
 # =============================================================================
@@ -33,7 +33,7 @@ VAL_DATA="dev/data/fineweb10B/fineweb_val_*.bin"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT/src"
 
-# Load modules (Cray MPICH + NCCL for multi-GPU)
+# Load modules (Cray MPICH + NCCL for multi-node)
 module load gcc/12.2.0
 module load python/3.9
 module load cudatoolkit/12.4
@@ -57,13 +57,13 @@ else
 fi
 
 echo "=============================================="
-echo "Multi-GPU Training — Flash Attention (4 GPUs, 1 node)"
+echo "Multi-Node Training — Flash Attention (16 GPUs, 4 nodes)"
 echo "=============================================="
 echo "Job ID:     $SLURM_JOB_ID"
-echo "Node:       $SLURM_JOB_NODELIST"
-echo "GPUs:       4 (single node)"
+echo "Nodes:      $SLURM_JOB_NODELIST"
+echo "GPUs:       16 (4 nodes × 4 GPUs)"
 echo "Model:      $MODEL"
-echo "Batch/GPU:  $BATCH_SIZE  (total: $((BATCH_SIZE * 4)))"
+echo "Batch/GPU:  $BATCH_SIZE  (total: $((BATCH_SIZE * 16)))"
 echo "Seq length: $SEQ_LEN"
 echo "Output dir: $OUTPUT_DIR"
 echo "Start time: $(date)"
@@ -80,7 +80,7 @@ fi
 export OMP_NUM_THREADS=32
 export PYTHONUNBUFFERED=1
 
-# NCCL settings for Perlmutter (Slingshot network)
+# NCCL settings for Perlmutter (Slingshot inter-node network)
 export NCCL_DEBUG=WARN
 export NCCL_NET_GDR_LEVEL=PHB
 export NCCL_CROSS_NIC=1
@@ -165,9 +165,9 @@ ls $TRAIN_DATA 1>/dev/null 2>&1 || { echo "ERROR: Training data not found: $TRAI
 ls $VAL_DATA   1>/dev/null 2>&1 || { echo "ERROR: Validation data not found: $VAL_DATA"; exit 1; }
 echo "Training data verified"
 
-# Build — multi-GPU + cuDNN Flash Attention
+# Build — multi-node + cuDNN Flash Attention
 echo "=============================================="
-echo "Building train_gpt2cu (Flash Attention, multi-GPU)..."
+echo "Building train_gpt2cu (Flash Attention, multi-node)..."
 make -f Makefile.perlmutter clean
 
 echo "Step 1: Compiling cuDNN attention module..."
@@ -195,17 +195,17 @@ fi
 if ldd ./train_gpt2cu | grep -q nccl; then
     echo "NCCL linked — multi-GPU enabled"
 else
-    echo "WARNING: NCCL not found in binary"
+    echo "WARNING: NCCL not found in binary — check NCCL_HOME"
 fi
 echo "Build successful: $(ls -lh train_gpt2cu)"
 
-# Run training — 4 GPUs on 1 node via MPI
+# Run training — 16 GPUs across 4 nodes via MPI
 echo "=============================================="
-echo "Starting 4-GPU Flash Attention training: $MODEL | seq=$SEQ_LEN | batch/GPU=$BATCH_SIZE"
+echo "Starting 16-GPU Flash Attention training: $MODEL | seq=$SEQ_LEN | batch/GPU=$BATCH_SIZE"
 echo "Start time: $(date)"
 echo "=============================================="
 
-srun --ntasks=4 \
+srun --ntasks=16 \
      --ntasks-per-node=4 \
      --gpus-per-node=4 \
      --cpus-per-task=32 \
@@ -239,5 +239,5 @@ srun --ntasks=4 \
 TRAIN_EXIT_CODE=$?
 echo "Training completed at $(date) — exit code: $TRAIN_EXIT_CODE"
 [ $TRAIN_EXIT_CODE -ne 0 ] && exit $TRAIN_EXIT_CODE
-echo "SUCCESS: 4-GPU Flash Attention training complete"
+echo "SUCCESS: 16-GPU Flash Attention training complete"
 ls -la "$OUTPUT_DIR"/ 2>/dev/null || true
