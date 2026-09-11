@@ -60,6 +60,17 @@ make -f Makefile.perlmutter train_gpt2cu USE_CUDNN=1
 
 **6 SLURM job scripts** in `scripts/` — covering all experiment configurations with correct Cray MPICH, NCCL, GTL, and cuDNN environment setup for Perlmutter's Slingshot-11 interconnect.
 
+### Data
+
+Training uses the [FineWeb 10B](https://huggingface.co/datasets/HuggingFaceFW/fineweb) dataset. Download and tokenize it with:
+
+```bash
+pip install -r requirements.txt
+cd src/
+python dev/data/fineweb.py -t classic -v 10B
+# outputs to src/dev/data/fineweb10B/fineweb_train_*.bin and fineweb_val_*.bin
+```
+
 ### How Flash Attention Works in llm.c
 
 Flash Attention is already implemented in llm.c via [`src/llmc/cudnn_att.cpp`](src/llmc/cudnn_att.cpp) — a cuDNN frontend graph-based wrapper supporting BF16/FP16, causal masking, and graph caching. It is toggled at compile time with `USE_CUDNN=1`.
@@ -181,7 +192,9 @@ See [`scripts/`](scripts/) for the full SLURM job scripts used on Perlmutter.
 
 ```
 .
+├── requirements.txt              # Python dependencies (llm.c)
 ├── src/                          # llm.c source (unmodified from Karpathy's original)
+│   ├── dev/data/                 # Data download scripts (fineweb.py, fineweb.sh, etc.)
 │   ├── llmc/
 │   │   ├── cudnn_att.cpp         # Flash Attention via cuDNN frontend (llm.c)
 │   │   ├── cudnn_att.h
@@ -223,4 +236,4 @@ Full write-up: [`report/CSCE654_Final_Project_Report_Super_Computing.pdf`](repor
 
 ## Attribution
 
-Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy (MIT License). The `src/` directory contains llm.c source files unmodified, including the cuDNN Flash Attention implementation (`cudnn_att.cpp`). Original contributions in this repo are `Makefile.perlmutter`, the SLURM scripts in `scripts/`, and all benchmarking results and analysis.
+Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy (MIT License). The `src/` directory contains llm.c source files unmodified, including the cuDNN Flash Attention implementation (`cudnn_att.cpp`), data download scripts (`src/dev/data/`), and `requirements.txt`. Original contributions in this repo are `Makefile.perlmutter`, the SLURM scripts in `scripts/`, and all benchmarking results and analysis.
