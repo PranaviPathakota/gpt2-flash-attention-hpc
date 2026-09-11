@@ -1,6 +1,8 @@
 # Flash Attention for GPT-2 Training on HPC
 
-Benchmarking **cuDNN Flash Attention vs Standard Attention** for GPT-2 pre-training across 1–16 NVIDIA A100 GPUs on [NERSC Perlmutter](https://docs.nersc.gov/systems/perlmutter/). Built on top of [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy.
+Benchmarking **cuDNN Flash Attention vs Standard Attention** for GPT-2 pre-training across 1–16 NVIDIA A100 GPUs on [NERSC Perlmutter](https://docs.nersc.gov/systems/perlmutter/).
+
+Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy, which includes cuDNN Flash Attention support. This project handles the **HPC deployment**: writing a Perlmutter-specific build system and SLURM job scripts, then running systematic benchmarks across model sizes, GPU counts, and sequence lengths.
 
 ---
 
@@ -34,26 +36,33 @@ Flash Attention delivers **28–47% higher throughput** and **33–63% less memo
 
 ## What This Project Does
 
-This project integrates **NVIDIA cuDNN 9.0+ Flash Attention** into the [llm.c](https://github.com/karpathy/llm.c) training framework and systematically benchmarks it against standard attention across:
+Deploys [llm.c](https://github.com/karpathy/llm.c) on NERSC Perlmutter and systematically benchmarks **cuDNN Flash Attention vs standard attention** across:
 
 - **3 model sizes:** GPT-2 124M, 350M, 774M parameters
 - **3 GPU tiers:** 1 GPU, 4 GPUs (single node), 16 GPUs (4 nodes, multi-node)
 - **4 sequence lengths:** 1K, 2K, 4K, 8K tokens
 - **2 attention implementations:** Standard (cuBLAS + custom softmax) vs Flash (cuDNN SDPA)
 
-### The Core Change
+### What Was Built for This Project
 
-Flash Attention is integrated via a single compile flag:
+**`src/Makefile.perlmutter`** — Perlmutter-specific build system. Karpathy's original Makefile detects NCCL via `dpkg` and MPI via a hardcoded OpenMPI path — both fail on Perlmutter, which uses a module-based NCCL (`$NCCL_DIR`) and Cray MPICH (`$MPICH_DIR` + GTL). This Makefile handles all 6 training configurations via flags:
 
 ```bash
-# Standard attention (default)
-make train_gpt2cu
+# Single GPU, standard attention
+make -f Makefile.perlmutter train_gpt2cu NO_MULTI_GPU=1 NO_USE_MPI=1
 
-# Flash Attention via cuDNN
-make train_gpt2cu USE_CUDNN=1
+# Single GPU, Flash Attention
+make -f Makefile.perlmutter train_gpt2cu NO_MULTI_GPU=1 NO_USE_MPI=1 USE_CUDNN=1
+
+# Multi-GPU / multi-node, Flash Attention
+make -f Makefile.perlmutter train_gpt2cu USE_CUDNN=1
 ```
 
-The implementation lives in [`src/llmc/cudnn_att.cpp`](src/llmc/cudnn_att.cpp) — a cuDNN frontend graph-based wrapper that supports FP16/BF16, causal masking, and graph caching to minimize recompilation overhead.
+**6 SLURM job scripts** in `scripts/` — covering all experiment configurations with correct Cray MPICH, NCCL, GTL, and cuDNN environment setup for Perlmutter's Slingshot-11 interconnect.
+
+### How Flash Attention Works in llm.c
+
+Flash Attention is already implemented in llm.c via [`src/llmc/cudnn_att.cpp`](src/llmc/cudnn_att.cpp) — a cuDNN frontend graph-based wrapper supporting BF16/FP16, causal masking, and graph caching. It is toggled at compile time with `USE_CUDNN=1`.
 
 ---
 
@@ -172,24 +181,27 @@ See [`scripts/`](scripts/) for the full SLURM job scripts used on Perlmutter.
 
 ```
 .
-├── src/                        # Source code (modified llm.c)
+├── src/                          # llm.c source (unmodified from Karpathy's original)
 │   ├── llmc/
-│   │   ├── cudnn_att.cpp       # Flash Attention via cuDNN (key change)
+│   │   ├── cudnn_att.cpp         # Flash Attention via cuDNN frontend (llm.c)
 │   │   ├── cudnn_att.h
-│   │   ├── attention.cuh       # Standard attention baseline
+│   │   ├── attention.cuh         # Standard attention baseline (llm.c)
 │   │   └── [other llm.c headers]
 │   ├── dev/cuda/
-│   │   ├── attention_forward.cu  # 11 attention kernel implementations
+│   │   ├── attention_forward.cu  # 11 attention kernel implementations (llm.c)
 │   │   ├── attention_backward.cu
 │   │   └── softmax_forward.cu
-│   ├── train_gpt2.cu           # Main CUDA training binary
-│   └── Makefile
-├── scripts/                    # SLURM job scripts for Perlmutter
+│   ├── train_gpt2.cu             # Main CUDA training binary (llm.c)
+│   ├── Makefile                  # Original llm.c Makefile
+│   └── Makefile.perlmutter       # ★ Perlmutter-specific build system (this project)
+├── scripts/                      # ★ SLURM job scripts for Perlmutter (this project)
 │   ├── single_gpu_standard.sh
 │   ├── single_gpu_flash.sh
 │   ├── multi_gpu_standard.sh
 │   ├── multi_gpu_flash.sh
-│   └── multi_node/             # Multi-node init methods (TCP, filesystem)
+│   ├── multi_node_standard.sh
+│   ├── multi_node_flash.sh
+│   └── multi_node/               # Multi-node init methods (TCP, filesystem)
 ├── results/
 │   ├── figures/                # Benchmark graphs
 │   ├── logs/                   # Representative SLURM job outputs
@@ -211,4 +223,4 @@ Full write-up: [`report/CSCE654_Final_Project_Report_Super_Computing.pdf`](repor
 
 ## Attribution
 
-This project is built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy (MIT License). The Flash Attention integration via cuDNN and all benchmarking experiments are original work.
+Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy (MIT License). The `src/` directory contains llm.c source files unmodified, including the cuDNN Flash Attention implementation (`cudnn_att.cpp`). Original contributions in this repo are `Makefile.perlmutter`, the SLURM scripts in `scripts/`, and all benchmarking results and analysis.
