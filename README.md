@@ -8,18 +8,20 @@ Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy, which in
 
 ## Key Results
 
-Flash Attention delivers **28–47% higher throughput** and **33–63% less memory per GPU**, and is the **only viable option** for training at 4K–8K sequence lengths on 40 GB GPUs.
+Flash Attention delivers **28–47% higher throughput** and **33–58% less memory per GPU**, and is the **only viable option** for training at 4K–8K sequence lengths on 40 GB GPUs.
 
-### 774M Model — All Configurations
+### Results by Configuration
 
-| Setup | Attention | Throughput | Memory/GPU | MFU | Max Seq |
-|-------|-----------|-----------|------------|-----|---------|
-| 1× A100-40GB | Standard | 145K tok/s | 22 GB | 39.1% | 2K |
-| 1× A100-40GB | **Flash** | **209K tok/s** | **13 GB** | **56.0%** | **4K** |
-| 4× A100-40GB | Standard | 106K tok/s | 29 GB | 42.5% | 2K |
-| 4× A100-40GB | **Flash** | **142K tok/s** | **17 GB** | **56.9%** | **4K** |
-| 16× A100-40GB | Standard | 340K tok/s | 8.6 GB | 33.9% | 2K |
-| 16× A100-40GB | **Flash** | **438K tok/s** | **5.8 GB** | **43.7%** | **8K** |
+> Single GPU experiments used the **124M model** (B=32). Multi-GPU experiments used the **774M model** (B=8 per GPU).
+
+| Setup | Model | Attention | Throughput | Memory/GPU | MFU | Max Seq Len |
+|-------|-------|-----------|-----------|------------|-----|-------------|
+| 1× A100-40GB | 124M | Standard | 145K tok/s | 22 GB | 39.1% | 1K |
+| 1× A100-40GB | 124M | **Flash** | **209K tok/s** | **13 GB** | **56.0%** | **2K** |
+| 4× A100-40GB | 774M | Standard | 106K tok/s | 29 GB | 42.5% | 2K |
+| 4× A100-40GB | 774M | **Flash** | **142K tok/s** | **17 GB** | **56.9%** | **2K** |
+| 16× A100-40GB | 774M | Standard | 340K tok/s | 8.6 GB | 33.9% | 2K |
+| 16× A100-40GB | 774M | **Flash** | **438K tok/s** | **5.8 GB** | **43.7%** | **8K** |
 
 ### Sequence Length Capability (16× A100-40GB, 774M Model)
 
@@ -111,11 +113,12 @@ See [`results/SINGLE_GPU_RESULTS.md`](results/SINGLE_GPU_RESULTS.md) and [`resul
 
 ## Multi-GPU Scaling
 
-| GPUs | Throughput (Flash, 1K seq) | Scaling Efficiency |
-|------|--------------------------|-------------------|
-| 1× | 209K tok/s | — |
-| 4× | 763K tok/s | 91% |
-| 16× | 438K tok/s (774M model) | 77% (multi-node) |
+Scaling from 4 GPUs to 16 GPUs (774M model, Flash Attention, 1K sequences):
+
+| Configuration | Throughput | Time/Step | Memory/GPU | Scaling Efficiency |
+|--------------|------------|-----------|------------|--------------------|
+| 4× A100-40GB | 142K tok/s | 3,680 ms | 16.9 GB | — |
+| 16× A100-40GB | 438K tok/s | 1,197 ms | 5.8 GB | **77%** (3.08× speedup) |
 
 16-GPU runs use 4 nodes connected via **Slingshot-11 interconnect** (~200 Gbps inter-node, NVLink intra-node). Communication overhead is ~12–15% per step.
 
