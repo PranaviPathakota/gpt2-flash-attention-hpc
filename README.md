@@ -18,8 +18,8 @@ Flash Attention delivers **28–47% higher throughput** and **33–58% less memo
 |-------|-------|-----------|-----------|------------|-----|-------------|
 | 1× A100-40GB | 124M | Standard | 145K tok/s | 22 GB | 39.1% | 1K |
 | 1× A100-40GB | 124M | **Flash** | **209K tok/s** | **13 GB** | **56.0%** | **2K** |
-| 4× A100-40GB | 774M | Standard | 106K tok/s | 29 GB | 42.5% | 2K |
-| 4× A100-40GB | 774M | **Flash** | **142K tok/s** | **17 GB** | **56.9%** | **2K** |
+| 4× A100-40GB | 774M | Standard | 106K tok/s | 26.4 GB | 42.2% | 1K |
+| 4× A100-40GB | 774M | **Flash** | **142K tok/s** | **14.9 GB** | **56.9%** | **2K** |
 | 16× A100-40GB | 774M | Standard | 340K tok/s | 8.6 GB | 33.9% | 2K |
 | 16× A100-40GB | 774M | **Flash** | **438K tok/s** | **5.8 GB** | **43.7%** | **8K** |
 
