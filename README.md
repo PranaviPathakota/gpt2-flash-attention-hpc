@@ -95,38 +95,6 @@ Standard attention stores the full T×T attention matrix in GPU HBM — **O(T²)
 
 ![MFU Comparison](results/figures/mfu_comparison.png)
 
-### Single GPU: Flash vs Standard (124M Model)
-
-![Single GPU Comparison](results/figures/single_gpu_comparison.png)
-
-### 4× A100: Flash vs Standard (124M Model)
-
-![4x GPU 124M Comparison](results/figures/4x_gpu_124M_comparison.png)
-
-### 4× A100: Flash vs Standard (350M Model)
-
-![4x GPU 350M Comparison](results/figures/4x_gpu_350M_comparison.png)
-
-### 4× A100: Flash vs Standard (774M Model)
-
-![4x GPU 774M Comparison](results/figures/4x_gpu_774M_comparison.png)
-
-### 16-GPU Results (774M Model, 4 Nodes)
-
-![16 GPU Comparison](results/figures/16gpu_774M_comparison.png)
-
-### Throughput vs Model Size
-
-![Performance vs Model Size](results/figures/performance_vs_model_size.png)
-
-### Throughput Scaling
-
-![Throughput Scaling](results/figures/Throughput_scaling.png)
-
-### Scaling from Single to Multi-GPU
-
-![Scaling Comparison](results/figures/single_vs_multi_gpu_comparison.png)
-
 See [`results/SINGLE_GPU_RESULTS.md`](results/SINGLE_GPU_RESULTS.md) and [`results/MULTI_GPU_RESULTS.md`](results/MULTI_GPU_RESULTS.md) for full tables.
 
 ---
