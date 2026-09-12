@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -A m4012                        # NERSC account
+#SBATCH -A <your_account>               # NERSC account
 #SBATCH -C gpu                          # 40GB A100 GPU nodes
 #SBATCH -q regular                      # queue
 #SBATCH -t 01:00:00                     # time limit

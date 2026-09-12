@@ -8,31 +8,35 @@ Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy, which in
 
 ## Key Results
 
-Flash Attention delivers **28–47% higher throughput** and **33–58% less memory per GPU**, and is the **only viable option** for training at 4K–8K sequence lengths on 40 GB GPUs.
+Flash Attention delivers **28–47% higher throughput** and **29–55% less memory per GPU**, and is the **only viable option** for training at 4K–8K sequence lengths on 40 GB GPUs.
 
 ### Results by Configuration
 
-> Single GPU experiments used the **124M model** (B=32). Multi-GPU experiments used the **774M model** (B=8 per GPU).
+Each row shows the best-performing sequence length before OOM. Two factors control this limit:
+- **Attention algorithm:** Standard attention stores the full T×T attention matrix in GPU HBM — O(T²) memory. Flash Attention never materializes it (recomputes in SRAM tiles) — O(T) memory. This is the fundamental difference.
+- **Per-GPU batch size:** With more GPUs, each GPU holds fewer sequences (B=32 at 1×, B=8 at 4×, B=2 at 16×). Smaller per-GPU batch means less activation memory, leaving more headroom for longer sequences. This is why 16× Standard survives 2K but 1× Standard OOMs at 2K — the batch is 16× smaller, not the attention algorithm.
 
-| Setup | Model | Attention | Throughput | Memory/GPU | MFU | Max Seq Len |
-|-------|-------|-----------|-----------|------------|-----|-------------|
-| 1× A100-40GB | 124M | Standard | 145K tok/s | 22 GB | 39.1% | 1K |
-| 1× A100-40GB | 124M | **Flash** | **209K tok/s** | **13 GB** | **56.0%** | **2K** |
-| 4× A100-40GB | 774M | Standard | 106K tok/s | 26.4 GB | 42.2% | 1K |
-| 4× A100-40GB | 774M | **Flash** | **142K tok/s** | **14.9 GB** | **56.9%** | **2K** |
-| 16× A100-40GB | 774M | Standard | 340K tok/s | 8.6 GB | 33.9% | 2K |
-| 16× A100-40GB | 774M | **Flash** | **438K tok/s** | **5.8 GB** | **43.7%** | **8K** |
+| Setup | Model | Batch/GPU | Attention | Throughput | Memory/GPU | MFU | Max Seq Len† |
+|-------|-------|-----------|-----------|-----------|------------|-----|--------------|
+| 1× A100-40GB | 124M | 32 | Standard | 144K tok/s | 21.7 GB | 38.7% | 1K |
+| 1× A100-40GB | 124M | 32 | **Flash** | **188K tok/s** | **23.1 GB** | **53.7%** | **2K** |
+| 4× A100-40GB | 774M | 8 | Standard | 105.5K tok/s | 27.0 GB | 42.2% | 1K |
+| 4× A100-40GB | 774M | 8 | **Flash** | **131.0K tok/s** | **25.2 GB** | **55.3%** | **2K** |
+| 16× A100-40GB | 774M | 2 | Standard | 294K tok/s | 20.4 GB | 31.0% | 2K |
+| 16× A100-40GB | 774M | 2 | **Flash** | **316K tok/s** | **26.8 GB** | **44.1%** | **8K** |
+
+† Max Seq Len = largest sequence length that ran without OOM on 40 GB GPUs. The next step up caused out-of-memory on that configuration.
 
 ### Sequence Length Capability (16× A100-40GB, 774M Model)
 
 | Sequence Length | Standard | Flash | Flash Memory/GPU |
 |----------------|----------|-------|-----------------|
-| 1K | 340K tok/s | 438K tok/s (+29%) | 5.8 GB |
-| 2K | 294K tok/s | 433K tok/s (+47%) | 8.2 GB |
-| 4K | OOM | 399K tok/s | 13.4 GB |
-| 8K | OOM | 316K tok/s | 25.8 GB |
+| 1K | 340K tok/s | 439K tok/s (+29%) | 6.8 GB |
+| 2K | 294K tok/s | 432K tok/s (+47%) | 9.2 GB |
+| 4K | OOM | 400K tok/s | 14.4 GB |
+| 8K | OOM | 316K tok/s | 26.8 GB |
 
-> Standard attention OOMs at 4K/8K even with 16-GPU parallelism. Flash Attention extends training to 8K sequences using only 65% of GPU memory.
+> At 16 GPUs, per-GPU batch is just B=2, so activation memory is minimal. The OOM boundary is dominated by the attention algorithm: Standard attention's O(T²) matrix allocation fails at 4K, while Flash Attention's O(T) memory footprint sustains 8K sequences using only 65% of GPU memory.
 
 ---
 
@@ -79,11 +83,11 @@ Flash Attention is already implemented in llm.c via [`src/llmc/cudnn_att.cpp`](s
 
 ---
 
-## Results
+## Benchmark Figures
 
 ### Memory Efficiency
 
-Flash Attention memory scales as **O(T^1.5)** rather than O(T²), enabling practical long-context training:
+Standard attention stores the full T×T attention matrix in GPU HBM — **O(T²) memory per head**. Flash Attention eliminates this by computing attention in SRAM tiles and never writing the full matrix to HBM — **O(T) memory for the attention pattern**. The result is dramatically lower memory growth with sequence length:
 
 ![Memory Comparison](results/figures/memory_comparison.png)
 
@@ -117,8 +121,8 @@ Scaling from 4 GPUs to 16 GPUs (774M model, Flash Attention, 1K sequences):
 
 | Configuration | Throughput | Time/Step | Memory/GPU | Scaling Efficiency |
 |--------------|------------|-----------|------------|--------------------|
-| 4× A100-40GB | 142K tok/s | 3,680 ms | 16.9 GB | — |
-| 16× A100-40GB | 438K tok/s | 1,197 ms | 5.8 GB | **77%** (3.08× speedup) |
+| 4× A100-40GB | 142.6K tok/s | 3,675 ms | 14.5 GB | — |
+| 16× A100-40GB | 439K tok/s | 1,192 ms | 5.8 GB | **77%** (3.08× speedup) |
 
 16-GPU runs use 4 nodes connected via **Slingshot-11 interconnect** (~200 Gbps inter-node, NVLink intra-node). Communication overhead is ~12–15% per step.
 
@@ -216,8 +220,7 @@ See [`scripts/`](scripts/) for the full SLURM job scripts used on Perlmutter.
 │   ├── multi_gpu_standard.sh
 │   ├── multi_gpu_flash.sh
 │   ├── multi_node_standard.sh
-│   ├── multi_node_flash.sh
-│   └── multi_node/               # Multi-node init methods (TCP, filesystem)
+│   └── multi_node_flash.sh
 ├── results/
 │   ├── figures/                # Benchmark graphs
 │   ├── logs/                   # Representative SLURM job outputs
