@@ -242,4 +242,4 @@ Full write-up: [`report/CSCE654_Final_Project_Report_Super_Computing.pdf`](repor
 
 ## Attribution
 
-Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy (MIT License). The `src/` directory contains llm.c source files unmodified, including the cuDNN Flash Attention implementation (`cudnn_att.cpp`), data download scripts (`src/dev/data/`), and `requirements.txt`. Original contributions in this repo are `Makefile.perlmutter`, the SLURM scripts in `scripts/`, and all benchmarking results and analysis.
+Built on [llm.c](https://github.com/karpathy/llm.c) by Andrej Karpathy. The `src/` directory contains llm.c source files unmodified, including the cuDNN Flash Attention implementation (`cudnn_att.cpp`), data download scripts (`src/dev/data/`), and `requirements.txt`. Original contributions in this repo are `Makefile.perlmutter`, the SLURM scripts in `scripts/`, and all benchmarking results and analysis.
