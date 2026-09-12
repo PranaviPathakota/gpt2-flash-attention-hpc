@@ -228,11 +228,6 @@ See [`scripts/`](scripts/) for the full SLURM job scripts used on Perlmutter.
 
 ---
 
-## Report
-
-Full write-up: [`report/CSCE654_Final_Project_Report_Super_Computing.pdf`](report/CSCE654_Final_Project_Report_Super_Computing.pdf)
-
----
 
 ## Attribution
 
